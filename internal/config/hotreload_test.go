@@ -14,6 +14,24 @@ import (
 	"time"
 )
 
+// syncBuffer is a thread-safe bytes.Buffer for use with slog in tests.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (sb *syncBuffer) Write(p []byte) (int, error) {
+	sb.mu.Lock()
+	defer sb.mu.Unlock()
+	return sb.buf.Write(p)
+}
+
+func (sb *syncBuffer) String() string {
+	sb.mu.Lock()
+	defer sb.mu.Unlock()
+	return sb.buf.String()
+}
+
 // --- Tier 3: FileWatcher ---
 
 func TestNewFileWatcher_EmptyPath(t *testing.T) {
@@ -458,8 +476,8 @@ func TestFileWatcher_CallbackError_RedactsURLsInLog(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	var logBuf bytes.Buffer
-	logger := slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	logBuf := &syncBuffer{}
+	logger := slog.New(slog.NewTextHandler(logBuf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
 	var callCount atomic.Int32
 	w, err := NewFileWatcher(cfgPath, func(data []byte) error {
@@ -479,7 +497,6 @@ func TestFileWatcher_CallbackError_RedactsURLsInLog(t *testing.T) {
 	if err := w.Start(ctx); err != nil {
 		t.Fatal(err)
 	}
-	defer w.Stop()
 
 	bad := []byte("x: 2\n")
 	if err := os.WriteFile(cfgPath, bad, 0o644); err != nil {
@@ -487,6 +504,8 @@ func TestFileWatcher_CallbackError_RedactsURLsInLog(t *testing.T) {
 	}
 
 	time.Sleep(500 * time.Millisecond)
+
+	w.Stop()
 
 	output := logBuf.String()
 	if strings.Contains(output, "https://internal-api.corp/secret/endpoint") {
