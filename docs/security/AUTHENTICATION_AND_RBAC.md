@@ -160,7 +160,7 @@ sequenceDiagram
 
 ## 4. Kubernetes RBAC (ClusterRole)
 
-The Helm-managed ClusterRole grants the AF ServiceAccount:
+The Kustomize-managed ClusterRole (`deploy/kustomize/base/02-rbac.yaml`) grants the AF ServiceAccount:
 
 | API Group | Resources | Verbs | Purpose |
 |-----------|-----------|-------|---------|
@@ -171,6 +171,22 @@ The Helm-managed ClusterRole grants the AF ServiceAccount:
 | `batch` | jobs, cronjobs | get, list | Job triage |
 | `authentication.k8s.io` | tokenreviews | create | JWT fallback validation |
 | `authorization.k8s.io` | subjectaccessreviews | create | Authorization checks |
+
+---
+
+## 4.1 External Dependency Authentication: Prometheus
+
+The severity triage pipeline (`internal/severity/triage.go`) queries Prometheus via HTTP for alert and rule data. This uses **service identity** authentication, not end-user impersonation:
+
+| Property | Value |
+|----------|-------|
+| Client scope | AF ServiceAccount (not user impersonation) |
+| Auth mechanism | Bearer token from SA projected volume (`prometheus.bearerTokenFile`) |
+| TLS | Optional custom CA file (`prometheus.tlsCaFile`) for mTLS environments |
+| Rationale | Prometheus metrics/rules are cluster-wide data; user-scoped access is not applicable |
+| NIST | AC-6 (least privilege): AF only needs read access to `/api/v1/{alerts,rules,query}` |
+
+This is distinct from the K8s impersonation model used by triage tools (`af_list_events`, etc.) which operate on behalf of the calling user.
 
 ---
 
@@ -194,4 +210,4 @@ The Helm-managed ClusterRole grants the AF ServiceAccount:
 
 ---
 
-*Source files: `internal/auth/middleware.go`, `internal/auth/jwt.go`, `internal/auth/tokenreview.go`, `internal/auth/impersonation.go`, `internal/auth/dynamic_impersonation.go`, `internal/agent/rbac_roles.yaml`, `deploy/helm/templates/clusterrole.yaml`*
+*Source files: `internal/auth/middleware.go`, `internal/auth/jwt.go`, `internal/auth/tokenreview.go`, `internal/auth/impersonation.go`, `internal/auth/dynamic_impersonation.go`, `internal/agent/rbac_roles.yaml`, `deploy/kustomize/base/02-rbac.yaml`*

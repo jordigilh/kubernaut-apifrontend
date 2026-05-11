@@ -415,6 +415,102 @@ var _ = Describe("Triage Orchestrator", func() {
 			Expect(result.Severity).To(BeEmpty())
 			Expect(result.Source).To(BeEmpty())
 		})
+
+		It("UT-AF-T-047: NewTriager panics when LLM is nil", func() {
+			Expect(func() {
+				severity.NewTriager(&mockPromClient{}, nil, defaultCfg, logr.Discard())
+			}).To(Panic())
+		})
+
+		It("UT-AF-T-048: Tier 3 LLM error propagates instead of defaulting", func() {
+			mockProm := &mockPromClient{
+				alerts:     []prom.Alert{},
+				ruleGroups: []prom.RuleGroup{},
+			}
+			llm := &mockLLM{
+				pureErr: errors.New("LLM unavailable"),
+			}
+			triager := severity.NewTriager(mockProm, llm, defaultCfg, logr.Discard())
+			_, err := triager.Triage(context.Background(), defaultInput)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("tier 3 LLM triage failed"))
+		})
+	})
+
+	Describe("Confidence Threshold", func() {
+		It("UT-AF-T-051: LLM confidence below threshold downgrades to medium (Tier 3)", func() {
+			mockProm := &mockPromClient{
+				alerts:     []prom.Alert{},
+				ruleGroups: []prom.RuleGroup{},
+			}
+			mockLLM := &mockLLM{
+				pureResult: severity.TriageResult{Severity: "critical", Source: severity.SourceLLMTriage, Confidence: 0.4},
+			}
+			cfg := defaultCfg
+			cfg.LLMConfidence = 0.7
+			triager := severity.NewTriager(mockProm, mockLLM, cfg, logr.Discard())
+			result, err := triager.Triage(context.Background(), defaultInput)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.Severity).To(Equal("medium"))
+			Expect(result.Source).To(Equal(severity.SourceLLMTriage))
+		})
+
+		It("UT-AF-T-051b: LLM confidence above threshold keeps original severity", func() {
+			mockProm := &mockPromClient{
+				alerts:     []prom.Alert{},
+				ruleGroups: []prom.RuleGroup{},
+			}
+			mockLLM := &mockLLM{
+				pureResult: severity.TriageResult{Severity: "critical", Source: severity.SourceLLMTriage, Confidence: 0.9},
+			}
+			cfg := defaultCfg
+			cfg.LLMConfidence = 0.7
+			triager := severity.NewTriager(mockProm, mockLLM, cfg, logr.Discard())
+			result, err := triager.Triage(context.Background(), defaultInput)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.Severity).To(Equal("critical"))
+		})
+
+		It("UT-AF-T-051c: LLM confidence below threshold downgrades to medium (Tier 2.5)", func() {
+			mockProm := &mockPromClient{
+				alerts: []prom.Alert{},
+				ruleGroups: []prom.RuleGroup{
+					{
+						Name: "test",
+						Rules: []prom.Rule{
+							{Name: "InactiveRule", Query: `up{namespace="prod"}`, State: "inactive", Labels: map[string]string{"severity": "high"}},
+						},
+					},
+				},
+				queryResult: &prom.QueryResult{Samples: []prom.Sample{}},
+			}
+			mockLLM := &mockLLM{
+				ruleResult: severity.TriageResult{Severity: "high", Source: severity.SourceLLMRuleInform, Confidence: 0.3},
+			}
+			cfg := defaultCfg
+			cfg.LLMConfidence = 0.7
+			triager := severity.NewTriager(mockProm, mockLLM, cfg, logr.Discard())
+			result, err := triager.Triage(context.Background(), defaultInput)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.Severity).To(Equal("medium"))
+			Expect(result.Source).To(Equal(severity.SourceLLMRuleInform))
+		})
+
+		It("UT-AF-T-051d: zero confidence skips threshold check (backward compat)", func() {
+			mockProm := &mockPromClient{
+				alerts:     []prom.Alert{},
+				ruleGroups: []prom.RuleGroup{},
+			}
+			mockLLM := &mockLLM{
+				pureResult: severity.TriageResult{Severity: "high", Source: severity.SourceLLMTriage, Confidence: 0},
+			}
+			cfg := defaultCfg
+			cfg.LLMConfidence = 0.7
+			triager := severity.NewTriager(mockProm, mockLLM, cfg, logr.Discard())
+			result, err := triager.Triage(context.Background(), defaultInput)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.Severity).To(Equal("high"))
+		})
 	})
 
 	Describe("Concurrency", func() {
