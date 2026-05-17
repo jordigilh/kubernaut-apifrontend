@@ -315,7 +315,9 @@ func (t *Triager) fetchRules(ctx context.Context) ([]prom.RuleGroup, error) {
 	if err != nil {
 		return nil, err
 	}
-	t.cache.Set(groups)
+	if len(groups) > 0 {
+		t.cache.Set(groups)
+	}
 	return groups, nil
 }
 
