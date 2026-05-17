@@ -645,6 +645,97 @@ var _ = Describe("Triage Orchestrator", func() {
 			Expect(testutil.CollectAndCount(duration)).To(BeNumerically(">", 0))
 		})
 	})
+
+	Describe("Rules Cache Behavior", func() {
+		It("UT-AF-T-043: empty GetRules result is not cached, subsequent call retries", func() {
+			callCount := 0
+			var mu sync.Mutex
+
+			getRulesFunc := func() ([]prom.RuleGroup, error) {
+				mu.Lock()
+				defer mu.Unlock()
+				callCount++
+				if callCount == 1 {
+					return []prom.RuleGroup{}, nil
+				}
+				return []prom.RuleGroup{{
+					Name: "test",
+					Rules: []prom.Rule{
+						{Name: "NetworkLatency", Query: `latency{namespace="prod"}`, State: "inactive", Labels: map[string]string{"severity": "high"}},
+					},
+				}}, nil
+			}
+
+			countingProm := &callCountingPromClient{
+				base:         &mockPromClient{alerts: []prom.Alert{}},
+				getRulesFunc: getRulesFunc,
+			}
+
+			cfg := defaultCfg
+			cfg.CacheTTLSeconds = 30
+			llm := &mockLLM{
+				pureResult: severity.TriageResult{Severity: "medium"},
+				ruleResult: severity.TriageResult{Severity: "high"},
+			}
+			triager := severity.NewTriager(countingProm, llm, cfg, logr.Discard())
+
+			// First triage: empty rules → falls to Tier 3 (LLM pure)
+			result, err := triager.Triage(context.Background(), defaultInput)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.Source).To(Equal(severity.SourceLLMTriage))
+
+			// Second triage (same triager, same cache): should re-fetch rules
+			// because empty results are not cached
+			result2, err := triager.Triage(context.Background(), defaultInput)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result2.Source).To(Equal(severity.SourceLLMRuleInform))
+
+			mu.Lock()
+			Expect(callCount).To(Equal(2), "GetRules should be called twice — empty result must not be cached")
+			mu.Unlock()
+		})
+
+		It("UT-AF-T-044: non-empty GetRules result IS cached within TTL", func() {
+			callCount := 0
+			var mu sync.Mutex
+
+			getRulesFunc := func() ([]prom.RuleGroup, error) {
+				mu.Lock()
+				defer mu.Unlock()
+				callCount++
+				return []prom.RuleGroup{{
+					Name: "test",
+					Rules: []prom.Rule{
+						{Name: "NetworkLatency", Query: `latency{namespace="prod"}`, State: "inactive", Labels: map[string]string{"severity": "high"}},
+					},
+				}}, nil
+			}
+
+			countingProm := &callCountingPromClient{
+				base:         &mockPromClient{alerts: []prom.Alert{}},
+				getRulesFunc: getRulesFunc,
+			}
+
+			cfg := defaultCfg
+			cfg.CacheTTLSeconds = 30
+			llm := &mockLLM{ruleResult: severity.TriageResult{Severity: "high"}}
+			triager := severity.NewTriager(countingProm, llm, cfg, logr.Discard())
+
+			// First triage: gets rules → Tier 2.5
+			result, err := triager.Triage(context.Background(), defaultInput)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.Source).To(Equal(severity.SourceLLMRuleInform))
+
+			// Second triage: should use cache, NOT call GetRules again
+			result2, err := triager.Triage(context.Background(), defaultInput)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result2.Source).To(Equal(severity.SourceLLMRuleInform))
+
+			mu.Lock()
+			Expect(callCount).To(Equal(1), "GetRules should be called only once — result was cached")
+			mu.Unlock()
+		})
+	})
 })
 
 // --- Test mocks ---
@@ -701,4 +792,21 @@ func (m *mockLLM) TriageWithRules(_ context.Context, _ []prom.Rule, _ severity.T
 func (m *mockLLM) TriagePure(_ context.Context, _ severity.TriageInput) (severity.TriageResult, error) {
 	m.pureCalled = true
 	return m.pureResult, m.pureErr
+}
+
+type callCountingPromClient struct {
+	base         *mockPromClient
+	getRulesFunc func() ([]prom.RuleGroup, error)
+}
+
+func (c *callCountingPromClient) GetAlerts(ctx context.Context) ([]prom.Alert, error) {
+	return c.base.GetAlerts(ctx)
+}
+
+func (c *callCountingPromClient) GetRules(_ context.Context) ([]prom.RuleGroup, error) {
+	return c.getRulesFunc()
+}
+
+func (c *callCountingPromClient) InstantQuery(ctx context.Context, query string) (*prom.QueryResult, error) {
+	return c.base.InstantQuery(ctx, query)
 }
