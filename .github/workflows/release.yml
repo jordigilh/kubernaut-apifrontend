@@ -167,7 +167,7 @@ jobs:
       contents: read
       id-token: write
     steps:
-      - uses: sigstore/cosign-installer@d7543c93d881b35a8faa02e8e3605f69b7a1ce62 # v3.10.0
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
 
       - name: Login to Quay.io
         run: |
@@ -230,7 +230,7 @@ jobs:
           name: sbom-${{ needs.prepare.outputs.version }}
           path: sbom.cdx.json
 
-      - uses: sigstore/cosign-installer@d7543c93d881b35a8faa02e8e3605f69b7a1ce62 # v3.10.0
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
 
       - name: Attest SBOM to image (Cosign)
         env:
